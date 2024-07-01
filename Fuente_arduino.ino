@@ -54,6 +54,10 @@ float uv = 0, uv_m1 = 0;
 float v_act = 0;
 float v_ref = 10;  //Tensión de referencia
 float i_max = 0.2;
+int cont=0;
+float v_acumulado=0;
+float v_prom=0;
+bool b_vacio = false;
 
 void lazo_control(float v_act, float i_act);
 void actualizarDisplay(int16_t adc0, float voltage0, int16_t adc1, float voltage1, int dacValue, float volt_ref);
@@ -72,13 +76,14 @@ void setup() {
   // Inicialización de ADC y DAC
   ads.begin(ADS1115_ADDRESS);
   dac.begin(MCP4725_ADDRESS);
+
   // Configura la velocidad de muestreo a 250 SPS
   ads.setDataRate(RATE_ADS1115_860SPS);
   //ads.startADCReading(ADS1X15_REG_CONFIG_MUX_SINGLE_0, false); // true para modo continuo
 
   // Pin D2 Output
   pinMode(2, OUTPUT);
-  digitalWrite(2, HIGH);  // Establece el pin D2 en estado alto (encendido)
+  //digitalWrite(2, HIGH);  // Establece el pin D2 en estado alto (encendido)
 
   // Configura el potenciómetro digital MCP4661
   setPotentiometer(0x00, 10);  // Configura el canal 0 del potenciómetro al maximo de su valor (0-255)
@@ -93,17 +98,50 @@ void loop() {
   // Convertir valores a voltaje (referencia de 5V) Valores sensados
   float voltage0 = adc0 * (5.0 / ADC_RESOLUTION);  // Convierte el valor del ADC0 a voltaje
   float voltage1 = adc1 * (5.0 / ADC_RESOLUTION);  // Convierte el valor del ADC1 a voltaje
-  lazo_control(voltage0, voltage1);                //Se llama a la función que calcula la acción de control
-  //Serial.println("Voltaje 0:", voltage0);
-  //Serial.println("Voltaje 1:", voltage1);
+  v_act = voltage0 * H_v;
+  i_act = voltage1 * H_i;
+  //Lazo de control Carga
+  Serial.println(i_act);
+
+  cont++;
+  v_acumulado+=v_act;
+  v_prom=v_acumulado/cont;
+  if (cont>5 && v_prom<1.1*v_ref&& v_prom>0.9*v_ref){
+    digitalWrite(2,HIGH);
+    cont=0;
+    v_acumulado=0;
+  } else {
+    if(cont==10){
+      cont=0;
+      v_acumulado=0;
+    }
+  }
+
+  if (i_act < 0.06 && b_vacio == false || v_act > 1.05 * v_ref) {
+    b_vacio = true;
+    digitalWrite(2, LOW);
+  }
+  if (v_act < (0.7 * v_ref) && b_vacio == true) {
+    b_vacio = false;
+  }
+  if (b_vacio) {
+    lazo_tension(v_act, i_act);
+  } else {
+    lazo_control(v_act, i_act);  //Se llama a la función que calcula la acción de control
+  }
+  //Lazo de control sin Carga
+
+
+  //Lazo de control desconección de carga
 
   // Valor de acción de control
-  float volt_ref = ui;                            // Voltaje de la acción de control
-  float aux = (volt_ref * DAC_RESOLUTION) / 5.0;  // Ajusta el voltaje a la resolución del DAC
+
+  float aux = (ui * DAC_RESOLUTION) / 5.0;  // Ajusta el voltaje a la resolución del DAC
   int dacValue = aux;
   dac.setVoltage(dacValue, false);  // Enviar valor al DAC
 
   // Actualizar el display cada minuto
+  /*
   unsigned long currentMillis = millis();
   if (currentMillis - previousDisplayMillis >= displayInterval) {
     actualizarDisplay(adc0, voltage0, adc1, voltage1, dacValue, volt_ref);
@@ -118,6 +156,7 @@ void loop() {
   //Serial.print(conversionTime);
   //Serial.println(" ms");
   // Mostrar valores en el monitor serial OLED
+  */
 }
 
 void initDisplay() {
@@ -139,28 +178,29 @@ void setPotentiometer(byte pot, byte value) {
   Wire.endTransmission();
 }
 
+void lazo_tension(float v_act, float i_act) {
+  if (v_act >= v_ref) {
+    ui = 0;
+  } else
+    ui = 0.4;
+}
+
 void lazo_control(float v_act, float i_act) {
-  v_act = v_act * H_v;
-  i_act = i_act * H_i;
+
   //Lazo de tensión:
   ev = v_ref - v_act;
   uv = kv1 * ev_m1 + kv2 * ev_m2 + kv3 * ev_m3 + uv_m1;
-  //if (ev < -2) {
-  //  uv = uv - uv_m1;
-  //}
   if (uv < 0) {
     uv = 0 - kv1 * ev_m1 - kv2 * ev_m2 - kv3 * ev_m3;
   }
   if (uv > i_max) {
     uv = i_max - kv1 * ev_m1 - kv2 * ev_m2 - kv3 * ev_m3;
   }
-   Serial.println(kv1 * ev_m1);
   ev_m3 = ev_m2;
   ev_m2 = ev_m1;
   ev_m1 = ev;
   uv_m1 = uv;
   //Lazo de corriente:
-  //uv=0.2;
   ei = uv - i_act;
   ui = ki1 * ei_m1 + ki2 * ei_m2 + ki3 * ei_m3 + ui_m1;
   if (ui > 1.5) {
@@ -173,7 +213,6 @@ void lazo_control(float v_act, float i_act) {
   ei_m2 = ei_m1;
   ei_m1 = ei;
   ui_m1 = ui;
- 
 }
 
 void actualizarDisplay(int16_t adc0, float voltage0, int16_t adc1, float voltage1, int dacValue, float volt_ref) {
