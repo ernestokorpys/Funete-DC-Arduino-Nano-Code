@@ -34,12 +34,20 @@ int16_t adc0, adc1;
 //--------------------------------------------------------------------------------------------------------------------------------
 //    Constantes de control
 //--------------------------------------------------------------------------------------------------------------------------------
+/*
 #define ki1 0.1
 #define ki2 0.01
 #define ki3 0.001
 #define kv1 0.006
 #define kv2 -0.005
 #define kv3 0.0000001
+*/
+float ki1 = 0.1;
+float ki2 = 0.01;
+float ki3 = 0.001;
+float kv1 = 0.006;
+float kv2 = -0.005;
+float kv3 = 0.00001;
 
 //--------------------------------------------------------------------------------------------------------------------------------
 //    Constantes de control
@@ -48,16 +56,21 @@ float H_i = 0.6;
 float ei = 0, ei_m1 = 0, ei_m2 = 0, ei_m3 = 0;
 float ui = 0, ui_m1 = 0;
 float i_act = 0;
-float H_v = 30 / 5;
+float H_v = 35 / 5;
 float ev = 0, ev_m1 = 0, ev_m2 = 0, ev_m3 = 0;
 float uv = 0, uv_m1 = 0;
 float v_act = 0;
-float v_ref = 10;  //Tensión de referencia
-float i_max = 0.2;
-int cont=0;
-float v_acumulado=0;
-float v_prom=0;
+float v_ref = 15;  //Tensión de referencia
+float i_max = 0.4;
+int cont = 0;
+float v_acumulado = 0;
+float v_prom = 0;
 bool b_vacio = false;
+float porcentaje_sobrepaso;
+float corriente_min;
+float valor_on_off;
+float error_porcentual;
+void reset_variables();
 
 void lazo_control(float v_act, float i_act);
 void actualizarDisplay(int16_t adc0, float voltage0, int16_t adc1, float voltage1, int dacValue, float volt_ref);
@@ -88,6 +101,68 @@ void setup() {
   // Configura el potenciómetro digital MCP4661
   setPotentiometer(0x00, 10);  // Configura el canal 0 del potenciómetro al maximo de su valor (0-255)
   Serial.println("Inicialización");
+  ki1 = 0.1;
+  ki2 = 0.01;
+  ki3 = 0.001;
+  kv1 = 0.011;
+  kv2 = -0.0102;
+  kv3 = 0.00001;
+  // Determinar el valor de porcentaje_sobrepaso según v_ref
+  if (v_ref <= 5) {
+    porcentaje_sobrepaso = 1.4;  // 1.1
+    corriente_min = 0.02;
+    valor_on_off = 0.4;
+    error_porcentual = 0.8;
+
+  } else if (v_ref <= 10) {
+    porcentaje_sobrepaso = 1.4;  // 1.2
+    corriente_min = 0.02;
+    valor_on_off = 0.4;
+    error_porcentual = 0.8;
+
+  } else if (v_ref <= 15) {
+    porcentaje_sobrepaso = 1.35;  // 1.3
+    corriente_min = 0.02;
+    valor_on_off = 0.5;
+    error_porcentual = 0.8;
+
+  } else if (v_ref <= 20) {
+    porcentaje_sobrepaso = 1.3;  // 1.4
+    corriente_min = 0.03;
+    valor_on_off = 0.5;
+    error_porcentual = 0.8;
+    ki1 = 0.1;
+    ki2 = 0.01;
+    ki3 = 0.001;
+    kv1 = 0.011;
+    kv2 = -0.0102;
+    kv3 = 0.00001;
+
+  } else if (v_ref <= 25) {
+    porcentaje_sobrepaso = 1.2;
+    corriente_min = 0.04;
+    valor_on_off = 0.5;
+    error_porcentual = 0.8;
+
+    ki1 = 0.1;
+    ki2 = 0.01;
+    ki3 = 0.001;
+    kv1 = 0.011;
+    kv2 = -0.0102;
+    kv3 = 0.00001;
+  } else {
+    porcentaje_sobrepaso = 1.1;
+    corriente_min = 0.05;
+    valor_on_off = 0.5;
+    error_porcentual = 0.5;
+
+    ki1 = 0.1;
+    ki2 = 0.01;
+    ki3 = 0.001;
+    kv1 = 0.011;
+    kv2 = -0.0102;
+    kv3 = 0.00001;
+  }
 }
 
 void loop() {
@@ -95,46 +170,40 @@ void loop() {
   startMillis = millis();
   adc0 = ads.readADC_SingleEnded(0);
   adc1 = ads.readADC_SingleEnded(1);
+  Serial.println(adc0);
   // Convertir valores a voltaje (referencia de 5V) Valores sensados
   float voltage0 = adc0 * (5.0 / ADC_RESOLUTION);  // Convierte el valor del ADC0 a voltaje
   float voltage1 = adc1 * (5.0 / ADC_RESOLUTION);  // Convierte el valor del ADC1 a voltaje
   v_act = voltage0 * H_v;
   i_act = voltage1 * H_i;
   //Lazo de control Carga
-  Serial.println(i_act);
 
   cont++;
-  v_acumulado+=v_act;
-  v_prom=v_acumulado/cont;
-  if (cont>5 && v_prom<1.1*v_ref&& v_prom>0.9*v_ref){
-    digitalWrite(2,HIGH);
-    cont=0;
-    v_acumulado=0;
+  v_acumulado += v_act;
+  v_prom = v_acumulado / cont;
+  if (cont > 5 && v_prom < 1.1 * v_ref && v_prom > 0.9 * v_ref) {
+    digitalWrite(2, HIGH);
+    cont = 0;
+    v_acumulado = 0;
   } else {
-    if(cont==10){
-      cont=0;
-      v_acumulado=0;
+    if (cont == 10) {
+      cont = 0;
+      v_acumulado = 0;
     }
   }
 
-  if (i_act < 0.06 && b_vacio == false || v_act > 1.05 * v_ref) {
+  if (v_act > porcentaje_sobrepaso * v_ref) {
     b_vacio = true;
     digitalWrite(2, LOW);
   }
-  if (v_act < (0.7 * v_ref) && b_vacio == true) {
+
+  if (v_act < (error_porcentual * v_ref) && b_vacio == true) {
     b_vacio = false;
   }
-  if (b_vacio) {
-    lazo_tension(v_act, i_act);
-  } else {
-    lazo_control(v_act, i_act);  //Se llama a la función que calcula la acción de control
-  }
+
+  lazo_control(v_act, i_act);
+
   //Lazo de control sin Carga
-
-
-  //Lazo de control desconección de carga
-
-  // Valor de acción de control
 
   float aux = (ui * DAC_RESOLUTION) / 5.0;  // Ajusta el voltaje a la resolución del DAC
   int dacValue = aux;
@@ -158,6 +227,16 @@ void loop() {
   // Mostrar valores en el monitor serial OLED
   */
 }
+void reset_variables() {
+  float H_i = 0.6;
+  float ei = 0, ei_m1 = 0, ei_m2 = 0, ei_m3 = 0;
+  float ui = 0, ui_m1 = 0;
+  float i_act = 0;
+  float H_v = 35 / 5;
+  float ev = 0, ev_m1 = 0, ev_m2 = 0, ev_m3 = 0;
+  float uv = 0, uv_m1 = 0;
+  float v_act = 0;
+}
 
 void initDisplay() {
   display.clearDisplay();
@@ -177,13 +256,17 @@ void setPotentiometer(byte pot, byte value) {
   Wire.write(value);  // Establece el valor del potenciómetro
   Wire.endTransmission();
 }
-
+/*
 void lazo_tension(float v_act, float i_act) {
   if (v_act >= v_ref) {
     ui = 0;
-  } else
-    ui = 0.4;
-}
+  } else {
+    ui = valor_on_off;
+  }
+  if (v_ref == 30) {
+    ui_m1 = ui;
+  }
+}*/
 
 void lazo_control(float v_act, float i_act) {
 
@@ -209,6 +292,18 @@ void lazo_control(float v_act, float i_act) {
   if (ui < 0.3) {
     ui = 0.3 - ki1 * ei_m1 - ki2 * ei_m2 - ki3 * ei_m3;
   }
+  if (b_vacio) {
+    if (v_act >= v_ref) {
+      ui = 0;
+    } else {
+      ui = valor_on_off;
+    }
+    ev = 0, ev_m1 = 0, ev_m2 = 0, ev_m3 = 0;
+    uv = 0, uv_m1 = 0;
+    ei = 0, ei_m1 = 0, ei_m2 = 0, ei_m3 = 0;
+    ui_m1 = 0;
+  }
+
   ei_m3 = ei_m2;
   ei_m2 = ei_m1;
   ei_m1 = ei;
