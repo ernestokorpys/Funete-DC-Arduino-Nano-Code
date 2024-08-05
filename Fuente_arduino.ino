@@ -10,21 +10,16 @@
 #define OLED_RESET -1
 #define SCREEN_ADDRESS 0x3C
 #define ADS1115_ADDRESS_ADDR_GND 0x48
-#define MCP4661_ADDRESS 0x2F  //Potenciometro
+#define MCP4661_ADDRESS 0x28  //Potenciometro
 
 // Objetos y variables globales
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 Adafruit_ADS1115 ads;
 Adafruit_MCP4725 dac;
-unsigned long previousMillis = 0;
-unsigned long startMillis;
-unsigned long endMillis;
-unsigned long conversionTime;
-unsigned long previousDisplayMillis = 0;
-const unsigned long displayInterval = 1000 * 4;  // 1 minuto en milisegundos
+
 // Variables para almacenar valores del ADC
 int16_t adc0, adc1;
-
+int caso=0;
 // Direcciones de los dispositivos I2C
 #define ADS1115_ADDRESS 0x48
 #define MCP4725_ADDRESS 0x60
@@ -34,46 +29,39 @@ int16_t adc0, adc1;
 //--------------------------------------------------------------------------------------------------------------------------------
 //    Constantes de control
 //--------------------------------------------------------------------------------------------------------------------------------
-/*
-#define ki1 0.1
-#define ki2 0.01
-#define ki3 0.001
-#define kv1 0.006
-#define kv2 -0.005
-#define kv3 0.0000001
-*/
-float ki1 = 0.1;
-float ki2 = 0.01;
-float ki3 = 0.001;
-float kv1 = 0.006;
-float kv2 = -0.005;
-float kv3 = 0.00001;
+bool estado=true; //0 1_Vacio 2_Carga
+float ki1, ki2, ki3, kv1, kv2, kv3;
+float H_i, ei, ei_m1, ei_m2, ei_m3, ui , ui_m1, H_v, ev , ev_m1 , ev_m2 , ev_m3, uv, uv_m1;
+double v_act = 0; 
+double i_act = 0;
 
-//--------------------------------------------------------------------------------------------------------------------------------
-//    Constantes de control
-//--------------------------------------------------------------------------------------------------------------------------------
-float H_i = 0.6;
-float ei = 0, ei_m1 = 0, ei_m2 = 0, ei_m3 = 0;
-float ui = 0, ui_m1 = 0;
-float i_act = 0;
-float H_v = 35 / 5;
-float ev = 0, ev_m1 = 0, ev_m2 = 0, ev_m3 = 0;
-float uv = 0, uv_m1 = 0;
-float v_act = 0;
-float v_ref = 15;  //Tensión de referencia
+double voltage0 = 0.0;  // Convierte el valor del ADC0 a voltaje
+double voltage1 = 0.0;  // Convierte el valor del ADC1 a voltaje
+
+
+float valores[6][12] = {
+        //sin carga                                     con carga
+        {0.5, 0.45, 0.01, 0.01, -0.0095, 0.00001,     0.1, 0.01, 0.001, 0.0000011, -0.00000105, 0.0000001}, //5 ajustar para sin carga
+        {0.1, 0.01, 0.001, 0.011, -0.0102, 0.00001,     0.1, 0.01, 0.001, 0.0000011, -0.00000102, 0.00001}, //10
+        {0.5, 0.45, 0.01, 0.01, -0.0095, 0.00001,     0.1, 0.01, 0.001, 0.011, -0.0102, 0.00001}, //15
+        {0.1, 0.01, 0.001, 0.011, -0.0102, 0.00001,     0.1, 0.01, 0.001, 0.011, -0.0102, 0.00001}, //20
+        {0.1, 0.01, 0.001, 0.011, -0.0102, 0.00001,     0.1, 0.01, 0.001, 0.011, -0.0102, 0.00001}, //25
+        {0.1, 0.01, 0.001, 0.011, -0.0102, 0.00001,     0.1, 0.01, 0.001, 0.011, -0.0102, 0.00001}  //>25
+};
+
+float v_ref = 5;  //Tensión de referencia
 float i_max = 0.4;
-int cont = 0;
-float v_acumulado = 0;
-float v_prom = 0;
-bool b_vacio = false;
-float porcentaje_sobrepaso;
-float corriente_min;
-float valor_on_off;
-float error_porcentual;
-void reset_variables();
+unsigned long lastResetTime = 0; // Variable para almacenar el tiempo de la última ejecución de reset_variables
+const unsigned long resetInterval = 5000; // Intervalo de 5 segundos en milisegundos
+unsigned long lastExecutionTime = 0; // Variable para almacenar el tiempo de la última ejecución
+const unsigned long executionInterval = 500; // Intervalo de 5 segundos en milisegundos
 
+void reset_variables();
+void constantes_control();
 void lazo_control(float v_act, float i_act);
+void control_sin_carga(float v_act, float i_act);
 void actualizarDisplay(int16_t adc0, float voltage0, int16_t adc1, float voltage1, int dacValue, float volt_ref);
+
 void setup() {
   Serial.begin(115200);
   Wire.begin();
@@ -97,145 +85,127 @@ void setup() {
   // Pin D2 Output
   pinMode(2, OUTPUT);
   //digitalWrite(2, HIGH);  // Establece el pin D2 en estado alto (encendido)
-
-  // Configura el potenciómetro digital MCP4661
-  setPotentiometer(0x00, 10);  // Configura el canal 0 del potenciómetro al maximo de su valor (0-255)
+  reset_variables();
   Serial.println("Inicialización");
-  ki1 = 0.1;
-  ki2 = 0.01;
-  ki3 = 0.001;
-  kv1 = 0.011;
-  kv2 = -0.0102;
-  kv3 = 0.00001;
-  // Determinar el valor de porcentaje_sobrepaso según v_ref
-  if (v_ref <= 5) {
-    porcentaje_sobrepaso = 1.4;  // 1.1
-    corriente_min = 0.02;
-    valor_on_off = 0.4;
-    error_porcentual = 0.8;
-
-  } else if (v_ref <= 10) {
-    porcentaje_sobrepaso = 1.4;  // 1.2
-    corriente_min = 0.02;
-    valor_on_off = 0.4;
-    error_porcentual = 0.8;
-
-  } else if (v_ref <= 15) {
-    porcentaje_sobrepaso = 1.35;  // 1.3
-    corriente_min = 0.02;
-    valor_on_off = 0.5;
-    error_porcentual = 0.8;
-
-  } else if (v_ref <= 20) {
-    porcentaje_sobrepaso = 1.3;  // 1.4
-    corriente_min = 0.03;
-    valor_on_off = 0.5;
-    error_porcentual = 0.8;
-    ki1 = 0.1;
-    ki2 = 0.01;
-    ki3 = 0.001;
-    kv1 = 0.011;
-    kv2 = -0.0102;
-    kv3 = 0.00001;
-
-  } else if (v_ref <= 25) {
-    porcentaje_sobrepaso = 1.2;
-    corriente_min = 0.04;
-    valor_on_off = 0.5;
-    error_porcentual = 0.8;
-
-    ki1 = 0.1;
-    ki2 = 0.01;
-    ki3 = 0.001;
-    kv1 = 0.011;
-    kv2 = -0.0102;
-    kv3 = 0.00001;
-  } else {
-    porcentaje_sobrepaso = 1.1;
-    corriente_min = 0.05;
-    valor_on_off = 0.5;
-    error_porcentual = 0.5;
-
-    ki1 = 0.1;
-    ki2 = 0.01;
-    ki3 = 0.001;
-    kv1 = 0.011;
-    kv2 = -0.0102;
-    kv3 = 0.00001;
-  }
+  digitalWrite(2, HIGH);
+  constantes_control();
 }
 
 void loop() {
-  // Leer valores del ADC
-  startMillis = millis();
   adc0 = ads.readADC_SingleEnded(0);
   adc1 = ads.readADC_SingleEnded(1);
-  Serial.println(adc0);
-  // Convertir valores a voltaje (referencia de 5V) Valores sensados
-  float voltage0 = adc0 * (5.0 / ADC_RESOLUTION);  // Convierte el valor del ADC0 a voltaje
-  float voltage1 = adc1 * (5.0 / ADC_RESOLUTION);  // Convierte el valor del ADC1 a voltaje
+
+  voltage0 = adc0 * (5.0 / ADC_RESOLUTION);  // Convierte el valor del ADC0 a voltaje
+  voltage1 = adc1 * (5.0 / ADC_RESOLUTION);  // Convierte el valor del ADC1 a voltaje
   v_act = voltage0 * H_v;
   i_act = voltage1 * H_i;
-  //Lazo de control Carga
 
-  cont++;
-  v_acumulado += v_act;
-  v_prom = v_acumulado / cont;
-  if (cont > 5 && v_prom < 1.1 * v_ref && v_prom > 0.9 * v_ref) {
-    digitalWrite(2, HIGH);
-    cont = 0;
-    v_acumulado = 0;
-  } else {
-    if (cont == 10) {
-      cont = 0;
-      v_acumulado = 0;
+  // Lazo de control Carga
+  Serial.println(i_act, 6);  // Imprime i_act con 6 decimales de precisión
+
+  if (millis() - lastExecutionTime >= executionInterval) {
+    if (i_act > 0.05 && v_act >= v_ref * 0.8) { // || i_act >= 0.05
+      estado = false;
+      //reset_variables();
+      //Lazo con carga
+      lastExecutionTime = millis(); // Actualizar el tiempo de la última ejecución
+    }
+    if (v_act >= v_ref * 1.2 && i_act <= 0.05) { // && i_act <= 0.005 en caso de desconeccion de una carga en paralelo
+      estado = true;
+      //Lazo sin carga
+      lastExecutionTime = millis(); // Actualizar el tiempo de la última ejecución
+    }
+    if(v_act <= v_ref * 0.2 && i_act >= 0.05 ){ //&& !(i_act>=0.95*i_max)
+      estado = false;
+      reset_variables();
+      //Lazo sin carga
+      lastExecutionTime = millis(); // Actualizar el tiempo de la última ejecución
     }
   }
-
-  if (v_act > porcentaje_sobrepaso * v_ref) {
-    b_vacio = true;
-    digitalWrite(2, LOW);
+  Serial.println(v_act, 6);  // Imprime i_act con 6 decimales de precisión
+  
+  if (estado){
+    control_sin_carga(v_act, i_act);
+    Serial.println("Lazo sin carga");
+  } else {
+    lazo_control(v_act, i_act);
+    Serial.println("Lazo con carga");
   }
-
-  if (v_act < (error_porcentual * v_ref) && b_vacio == true) {
-    b_vacio = false;
-  }
-
-  lazo_control(v_act, i_act);
-
-  //Lazo de control sin Carga
 
   float aux = (ui * DAC_RESOLUTION) / 5.0;  // Ajusta el voltaje a la resolución del DAC
   int dacValue = aux;
   dac.setVoltage(dacValue, false);  // Enviar valor al DAC
-
-  // Actualizar el display cada minuto
-  /*
-  unsigned long currentMillis = millis();
-  if (currentMillis - previousDisplayMillis >= displayInterval) {
-    actualizarDisplay(adc0, voltage0, adc1, voltage1, dacValue, volt_ref);
-    previousDisplayMillis = currentMillis;
-  }
-
-  endMillis = millis();
-  // Calcular y mostrar el tiempo de conversión
-  conversionTime = endMillis - startMillis;
-
-  //Serial.print("Tiempo de conversión ADC: ");
-  //Serial.print(conversionTime);
-  //Serial.println(" ms");
-  // Mostrar valores en el monitor serial OLED
-  */
 }
+
 void reset_variables() {
-  float H_i = 0.6;
-  float ei = 0, ei_m1 = 0, ei_m2 = 0, ei_m3 = 0;
-  float ui = 0, ui_m1 = 0;
-  float i_act = 0;
-  float H_v = 35 / 5;
-  float ev = 0, ev_m1 = 0, ev_m2 = 0, ev_m3 = 0;
-  float uv = 0, uv_m1 = 0;
-  float v_act = 0;
+  Serial.println("Reset");
+  H_i = 0.6;
+  ei = 0; ei_m1 = 0; ei_m2 = 0; ei_m3 = 0;
+  ui = 0; ui_m1 = 0;
+  H_v = 35 / 5;
+  ev = 0; ev_m1 = 0; ev_m2 = 0; ev_m3 = 0;
+  uv = 0; uv_m1 = 0;
+}
+
+void control_sin_carga(float v_act, float i_act) {
+  //Lazo de tensión:
+  ev = v_ref - v_act;
+  uv = kv1 * ev + kv2 * ev_m1 + kv3 * ev_m2 + uv_m1;
+  if (uv < 0.3) {
+    uv = 0.3 - kv1 * ev - kv2 * ev_m1 - kv3 * ev_m2;
+  }
+  if (uv > 1.5) {
+    uv = 1.5 - kv1 * ev - kv2 * ev_m1 - kv3 * ev_m2;
+  }
+  ev_m3 = ev_m2;
+  ev_m2 = ev_m1;
+  ev_m1 = ev;
+  uv_m1 = uv;
+  ei=0, ei_m1=0, ei_m2=0, ei_m3=0;
+  ui=uv;
+  ui_m1=ui;
+  //Lazo de corriente:
+  /*ei = uv - i_act;
+  ui = ki1 * ei + ki2 * ei_m1 + ki3 * ei_m2 + ui_m1;
+  if (ui > 1.5) {
+    ui = 1.5 - ki1 * ei - ki2 * ei_m1 - ki3 * ei_m2;
+  }
+  if (ui < 0.3) {
+    ui = 0.3 - ki1 * ei - ki2 * ei_m1 - ki3 * ei_m2;
+  }
+  ei_m3 = ei_m2;
+  ei_m2 = ei_m1;
+  ei_m1 = ei;
+  ui_m1 = ui;*/
+}
+
+void lazo_control(float v_act, float i_act) {
+  //Lazo de tensión:
+  ev = v_ref - v_act;
+  uv = kv1 * ev + kv2 * ev_m1 + kv3 * ev_m2 + uv_m1;
+  if (uv < 0) {
+    uv = 0 - kv1 * ev - kv2 * ev_m1 - kv3 * ev_m2;
+  }
+  if (uv > i_max) {
+    uv = i_max - kv1 * ev - kv2 * ev_m1 - kv3 * ev_m2;
+  }
+  ev_m3 = ev_m2;
+  ev_m2 = ev_m1;
+  ev_m1 = ev;
+  uv_m1 = uv;
+  //Lazo de corriente:
+  ei = uv - i_act;
+  ui = ki1 * ei + ki2 * ei_m1 + ki3 * ei_m2 + ui_m1;
+  if (ui > 1.5) {
+    ui = 1.5 - ki1 * ei - ki2 * ei_m1 - ki3 * ei_m2;
+  }
+  if (ui < 0.3) {
+    ui = 0.3 - ki1 * ei - ki2 * ei_m1 - ki3 * ei_m2;
+  }
+  ei_m3 = ei_m2;
+  ei_m2 = ei_m1;
+  ei_m1 = ei;
+  ui_m1 = ui;
 }
 
 void initDisplay() {
@@ -256,58 +226,40 @@ void setPotentiometer(byte pot, byte value) {
   Wire.write(value);  // Establece el valor del potenciómetro
   Wire.endTransmission();
 }
-/*
-void lazo_tension(float v_act, float i_act) {
-  if (v_act >= v_ref) {
-    ui = 0;
+
+void constantes_control(){
+  if (v_ref <= 5) {
+  caso=0;
+  } else if (v_ref <= 10) {
+  caso=1;
+  } else if (v_ref <= 15) {
+  caso=2;
+  } else if (v_ref <= 20) {
+  caso=3;
+  } else if (v_ref <= 25) {
+  caso=4;
+  } else{
+    caso=5;
+  };
+
+  if (estado) {
+  ki1 = valores[caso][0];
+  ki2 = valores[caso][1];
+  ki3 = valores[caso][2];
+  kv1 = valores[caso][3];
+  kv2 = valores[caso][4];
+  kv3 = valores[caso][5];
+  Serial.println(ki1);
+
   } else {
-    ui = valor_on_off;
+  ki1 = valores[caso][6];
+  ki2 = valores[caso][7];
+  ki3 = valores[caso][8];
+  kv1 = valores[caso][9];
+  kv2 = valores[caso][10];
+  kv3 = valores[caso][11];
+  Serial.println(ki1);
   }
-  if (v_ref == 30) {
-    ui_m1 = ui;
-  }
-}*/
-
-void lazo_control(float v_act, float i_act) {
-
-  //Lazo de tensión:
-  ev = v_ref - v_act;
-  uv = kv1 * ev_m1 + kv2 * ev_m2 + kv3 * ev_m3 + uv_m1;
-  if (uv < 0) {
-    uv = 0 - kv1 * ev_m1 - kv2 * ev_m2 - kv3 * ev_m3;
-  }
-  if (uv > i_max) {
-    uv = i_max - kv1 * ev_m1 - kv2 * ev_m2 - kv3 * ev_m3;
-  }
-  ev_m3 = ev_m2;
-  ev_m2 = ev_m1;
-  ev_m1 = ev;
-  uv_m1 = uv;
-  //Lazo de corriente:
-  ei = uv - i_act;
-  ui = ki1 * ei_m1 + ki2 * ei_m2 + ki3 * ei_m3 + ui_m1;
-  if (ui > 1.5) {
-    ui = 1.5 - ki1 * ei_m1 - ki2 * ei_m2 - ki3 * ei_m3;
-  }
-  if (ui < 0.3) {
-    ui = 0.3 - ki1 * ei_m1 - ki2 * ei_m2 - ki3 * ei_m3;
-  }
-  if (b_vacio) {
-    if (v_act >= v_ref) {
-      ui = 0;
-    } else {
-      ui = valor_on_off;
-    }
-    ev = 0, ev_m1 = 0, ev_m2 = 0, ev_m3 = 0;
-    uv = 0, uv_m1 = 0;
-    ei = 0, ei_m1 = 0, ei_m2 = 0, ei_m3 = 0;
-    ui_m1 = 0;
-  }
-
-  ei_m3 = ei_m2;
-  ei_m2 = ei_m1;
-  ei_m1 = ei;
-  ui_m1 = ui;
 }
 
 void actualizarDisplay(int16_t adc0, float voltage0, int16_t adc1, float voltage1, int dacValue, float volt_ref) {
