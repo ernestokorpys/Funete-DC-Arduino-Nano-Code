@@ -22,6 +22,7 @@ int16_t adc0, adc1;
 int caso=0;
 // Direcciones de los dispositivos I2C
 #define ADS1115_ADDRESS 0x48
+#define MCP4661_ADDRESS 0x28
 #define MCP4725_ADDRESS 0x60
 #define DAC_RESOLUTION 4095.0
 #define ADC_RESOLUTION 26666.0  // Valor Practico diferente a valor real que es 2^16
@@ -38,19 +39,26 @@ double i_act = 0;
 double voltage0 = 0.0;  // Convierte el valor del ADC0 a voltaje
 double voltage1 = 0.0;  // Convierte el valor del ADC1 a voltaje
 
-
 float valores[6][12] = {
         //sin carga                                     con carga
-        {0.5, 0.45, 0.01, 0.01, -0.0095, 0.00001,     0.1, 0.01, 0.001, 0.0000011, -0.00000105, 0.0000001}, //5 ajustar para sin carga
-        {0.1, 0.01, 0.001, 0.011, -0.0102, 0.00001,     0.1, 0.01, 0.001, 0.0000011, -0.00000102, 0.00001}, //10
-        {0.5, 0.45, 0.01, 0.01, -0.0095, 0.00001,     0.1, 0.01, 0.001, 0.011, -0.0102, 0.00001}, //15
-        {0.1, 0.01, 0.001, 0.011, -0.0102, 0.00001,     0.1, 0.01, 0.001, 0.011, -0.0102, 0.00001}, //20
-        {0.1, 0.01, 0.001, 0.011, -0.0102, 0.00001,     0.1, 0.01, 0.001, 0.011, -0.0102, 0.00001}, //25
-        {0.1, 0.01, 0.001, 0.011, -0.0102, 0.00001,     0.1, 0.01, 0.001, 0.011, -0.0102, 0.00001}  //>25
+        {0.5, 0.45, 0.01, 0.01, -0.0095, 0.00001,     0.5, 0.45, 0.01, 0.01, -0.0095, 0.00001}, //5 ajustar para sin carga
+        {0.5, 0.45, 0.01, 0.01, -0.0095, 0.00001,     0.5, 0.45, 0.01, 0.01, -0.0095, 0.00001}, //10
+        {0.5, 0.45, 0.01, 0.01, -0.0095, 0.00001,     0.5, 0.45, 0.01, 0.01, -0.0095, 0.00001}, //15
+        {0.5, 0.45, 0.01, 0.01, -0.0095, 0.00001,     0.5, 0.45, 0.01, 0.01, -0.0095, 0.00001}, //20
+        {0.5, 0.45, 0.01, 0.01, -0.0095, 0.00001,      0.5, 0.45, 0.01, 0.01, -0.0095, 0.00001}, //25 //Espectacular estas constantes
+        {0.5, 0.45, 0.01, 0.01, -0.0095, 0.00001,     0.1, 0.01, 0.001, 0.011, -0.0102, 0.00001}  //>25
 };
+float i_min_range[6]={
+  0.06,   0.06,   0.06,   0.06,   0.06,   0.06,
+  };
+float i_min;
+float sobrepaso[6]={
+  1.2, 1.2,  1.3,  1.14, 1.15, 1.15
+  };
 
-float v_ref = 5;  //Tensión de referencia
-float i_max = 0.4;
+float v_ref = 10;  //Tensión de referencia
+float i_max = 1.5;
+bool flag;
 unsigned long lastResetTime = 0; // Variable para almacenar el tiempo de la última ejecución de reset_variables
 const unsigned long resetInterval = 5000; // Intervalo de 5 segundos en milisegundos
 unsigned long lastExecutionTime = 0; // Variable para almacenar el tiempo de la última ejecución
@@ -61,6 +69,7 @@ void constantes_control();
 void lazo_control(float v_act, float i_act);
 void control_sin_carga(float v_act, float i_act);
 void actualizarDisplay(int16_t adc0, float voltage0, int16_t adc1, float voltage1, int dacValue, float volt_ref);
+void setPotentiometer(byte channel, byte value);
 
 void setup() {
   Serial.begin(115200);
@@ -89,12 +98,13 @@ void setup() {
   Serial.println("Inicialización");
   digitalWrite(2, HIGH);
   constantes_control();
+  setPotentiometer(0,50);  // Canal 0, valor 128 (mitad del rango)
 }
 
 void loop() {
   adc0 = ads.readADC_SingleEnded(0);
   adc1 = ads.readADC_SingleEnded(1);
-
+  constantes_control();
   voltage0 = adc0 * (5.0 / ADC_RESOLUTION);  // Convierte el valor del ADC0 a voltaje
   voltage1 = adc1 * (5.0 / ADC_RESOLUTION);  // Convierte el valor del ADC1 a voltaje
   v_act = voltage0 * H_v;
@@ -102,27 +112,27 @@ void loop() {
 
   // Lazo de control Carga
   Serial.println(i_act, 6);  // Imprime i_act con 6 decimales de precisión
-
+  Serial.println(v_act, 6);  // Imprime i_act con 6 decimales de precisión
   if (millis() - lastExecutionTime >= executionInterval) {
-    if (i_act > 0.05 && v_act >= v_ref * 0.8) { // || i_act >= 0.05
-      estado = false;
-      //reset_variables();
-      //Lazo con carga
-      lastExecutionTime = millis(); // Actualizar el tiempo de la última ejecución
-    }
-    if (v_act >= v_ref * 1.2 && i_act <= 0.05) { // && i_act <= 0.005 en caso de desconeccion de una carga en paralelo
-      estado = true;
-      //Lazo sin carga
-      lastExecutionTime = millis(); // Actualizar el tiempo de la última ejecución
-    }
-    if(v_act <= v_ref * 0.2 && i_act >= 0.05 ){ //&& !(i_act>=0.95*i_max)
-      estado = false;
+    if (i_act > i_min && flag==true) { // || i_act >= 0.05
+      estado = false; //Lazo con carga
+      flag = false;
       reset_variables();
-      //Lazo sin carga
+      lastExecutionTime = millis(); // Actualizar el tiempo de la última ejecución
+    }
+    if (v_act >= v_ref * 1.2 && i_act <= i_min) { 
+      estado = true; //Lazo sin carga
+      flag = true;
+      //reset_variables();
+      lastExecutionTime = millis(); // Actualizar el tiempo de la última ejecución
+    }
+    if(v_act <= v_ref * 0.2 && flag==true){ 
+      estado = false; //Lazo con carga
+      flag = false;
+      reset_variables();
       lastExecutionTime = millis(); // Actualizar el tiempo de la última ejecución
     }
   }
-  Serial.println(v_act, 6);  // Imprime i_act con 6 decimales de precisión
   
   if (estado){
     control_sin_carga(v_act, i_act);
@@ -132,13 +142,20 @@ void loop() {
     Serial.println("Lazo con carga");
   }
 
+  /*
+  if(v_act>v_ref*1.08){
+    digitalWrite(2, LOW);
+  } else{
+    digitalWrite(2, HIGH);
+  }
+    */
   float aux = (ui * DAC_RESOLUTION) / 5.0;  // Ajusta el voltaje a la resolución del DAC
   int dacValue = aux;
   dac.setVoltage(dacValue, false);  // Enviar valor al DAC
 }
 
 void reset_variables() {
-  Serial.println("Reset");
+  Serial.println("Reseeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeet");
   H_i = 0.6;
   ei = 0; ei_m1 = 0; ei_m2 = 0; ei_m3 = 0;
   ui = 0; ui_m1 = 0;
@@ -164,6 +181,7 @@ void control_sin_carga(float v_act, float i_act) {
   ei=0, ei_m1=0, ei_m2=0, ei_m3=0;
   ui=uv;
   ui_m1=ui;
+
   //Lazo de corriente:
   /*ei = uv - i_act;
   ui = ki1 * ei + ki2 * ei_m1 + ki3 * ei_m2 + ui_m1;
@@ -220,13 +238,6 @@ void initDisplay() {
   delay(1000 * 2);
 }
 
-void setPotentiometer(byte pot, byte value) {
-  Wire.beginTransmission(MCP4661_ADDRESS);
-  Wire.write(pot);    // Selecciona el canal del potenciómetro
-  Wire.write(value);  // Establece el valor del potenciómetro
-  Wire.endTransmission();
-}
-
 void constantes_control(){
   if (v_ref <= 5) {
   caso=0;
@@ -241,6 +252,7 @@ void constantes_control(){
   } else{
     caso=5;
   };
+  i_min=i_min_range[caso];
 
   if (estado) {
   ki1 = valores[caso][0];
@@ -249,8 +261,7 @@ void constantes_control(){
   kv1 = valores[caso][3];
   kv2 = valores[caso][4];
   kv3 = valores[caso][5];
-  Serial.println(ki1);
-
+  
   } else {
   ki1 = valores[caso][6];
   ki2 = valores[caso][7];
@@ -258,8 +269,14 @@ void constantes_control(){
   kv1 = valores[caso][9];
   kv2 = valores[caso][10];
   kv3 = valores[caso][11];
-  Serial.println(ki1);
   }
+}
+
+void setPotentiometer(byte channel, byte value) {
+  Wire.beginTransmission(MCP4661_ADDRESS);
+  Wire.write((channel == 0) ? 0x00 : 0x10); // Selecciona el canal (0 o 1)
+  Wire.write(value); // Configura el valor del potenciómetro
+  Wire.endTransmission();
 }
 
 void actualizarDisplay(int16_t adc0, float voltage0, int16_t adc1, float voltage1, int dacValue, float volt_ref) {
