@@ -56,25 +56,48 @@ float sobrepaso[6]={
   1.2, 1.2,  1.3,  1.14, 1.15, 1.15
   };
 
-float v_ref = 10;  //Tensión de referencia
+float v_ref = 25;  //Tensión de referencia
 float i_max = 1.5;
 bool flag;
+
+//pines encoder 1 --------------------------------------------------------------------------------------------------
+
+const int encoderCLK = A1;  // Pin D12
+const int encoderDT = A2;   // Pin D13
+const int encoderSW = A3;   // Pin A0
+int counter = 0;
+int currentStateCLK;
+int lastStateCLK;
+bool buttonPressed = false;
+// -------------------------------------------------------------------------------------------------------------------
+const int pinCarga = 2;  // Pin donde que trabaja sobre el relé
+// -------------------------------------------------------------------------------------------------------------------
 unsigned long lastResetTime = 0; // Variable para almacenar el tiempo de la última ejecución de reset_variables
 const unsigned long resetInterval = 5000; // Intervalo de 5 segundos en milisegundos
 unsigned long lastExecutionTime = 0; // Variable para almacenar el tiempo de la última ejecución
 const unsigned long executionInterval = 500; // Intervalo de 5 segundos en milisegundos
-
+// Definicion de funciones--------------------------------------------------------------------------------------------
+unsigned long startTime = 0;  // Tiempo de inicio para la medición
+bool isBelowThreshold = false;  // Estado si v_act está por debajo del umbral
+// -------------------------------------------------------------------------------------------------------------------
 void reset_variables();
 void constantes_control();
 void lazo_control(float v_act, float i_act);
 void control_sin_carga(float v_act, float i_act);
 void actualizarDisplay(int16_t adc0, float voltage0, int16_t adc1, float voltage1, int dacValue, float volt_ref);
 void setPotentiometer(byte channel, byte value);
-
+void algoritmo_control();
+void encoder_1();
+void conexion_desconexion_carga();
 void setup() {
+  // Configuración de pines encoder
+  pinMode(encoderCLK, INPUT);
+  pinMode(encoderDT, INPUT);
+  pinMode(encoderSW, INPUT_PULLUP);
+  lastStateCLK = digitalRead(encoderCLK);     // Leer el estado inicial del CLK
+
   Serial.begin(115200);
   Wire.begin();
-
   // Inicialización de display OLED
   if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
     Serial.println(F("SSD1306 allocation failed"));
@@ -82,17 +105,12 @@ void setup() {
       ;
   }
   initDisplay();
-
   // Inicialización de ADC y DAC
   ads.begin(ADS1115_ADDRESS);
   dac.begin(MCP4725_ADDRESS);
-
-  // Configura la velocidad de muestreo a 250 SPS
-  ads.setDataRate(RATE_ADS1115_860SPS);
+  ads.setDataRate(RATE_ADS1115_860SPS);   // Configura la velocidad de muestreo a 250 SPS
   //ads.startADCReading(ADS1X15_REG_CONFIG_MUX_SINGLE_0, false); // true para modo continuo
-
-  // Pin D2 Output
-  pinMode(2, OUTPUT);
+  pinMode(2, OUTPUT); // Pin D2 Output Rele
   //digitalWrite(2, HIGH);  // Establece el pin D2 en estado alto (encendido)
   reset_variables();
   Serial.println("Inicialización");
@@ -102,17 +120,42 @@ void setup() {
 }
 
 void loop() {
+  encoder_1();
   adc0 = ads.readADC_SingleEnded(0);
   adc1 = ads.readADC_SingleEnded(1);
-  constantes_control();
+  
   voltage0 = adc0 * (5.0 / ADC_RESOLUTION);  // Convierte el valor del ADC0 a voltaje
   voltage1 = adc1 * (5.0 / ADC_RESOLUTION);  // Convierte el valor del ADC1 a voltaje
   v_act = voltage0 * H_v;
   i_act = voltage1 * H_i;
-
   // Lazo de control Carga
-  Serial.println(i_act, 6);  // Imprime i_act con 6 decimales de precisión
-  Serial.println(v_act, 6);  // Imprime i_act con 6 decimales de precisión
+  //Serial.println(i_act, 6);  // Imprime i_act con 6 decimales de precisión
+  //Serial.println(v_act, 6);  // Imprime i_act con 6 decimales de precisión
+  conexion_desconexion_carga(); //Anda
+  constantes_control();
+  algoritmo_control();
+  float aux = (ui * DAC_RESOLUTION) / 5.0;  // Ajusta el voltaje a la resolución del DAC
+  int dacValue = aux;
+  dac.setVoltage(dacValue, false);  // Enviar valor al DAC
+}
+
+void conexion_desconexion_carga(){
+   if (v_act < v_ref*1.05) {
+    if (!isBelowThreshold) {
+      startTime = millis();  // Si es la primera vez que está por debajo, guarda el tiempo actual
+      isBelowThreshold = true;
+    } else {
+      if (millis() - startTime >= 2000) { // Han pasado 2 segundos con v_act por debajo del valor de referencia
+        digitalWrite(pinCarga, HIGH);
+      }
+    }
+  } else {    // Si v_act está por encima del valor de referencia
+    isBelowThreshold = false;  // Reinicia el estado
+    digitalWrite(pinCarga, LOW);
+  }
+}
+
+void algoritmo_control(){
   if (millis() - lastExecutionTime >= executionInterval) {
     if (i_act > i_min && flag==true) { // || i_act >= 0.05
       estado = false; //Lazo con carga
@@ -133,25 +176,13 @@ void loop() {
       lastExecutionTime = millis(); // Actualizar el tiempo de la última ejecución
     }
   }
-  
   if (estado){
     control_sin_carga(v_act, i_act);
-    Serial.println("Lazo sin carga");
+    //Serial.println("Lazo sin carga");
   } else {
     lazo_control(v_act, i_act);
-    Serial.println("Lazo con carga");
+    //Serial.println("Lazo con carga");
   }
-
-  /*
-  if(v_act>v_ref*1.08){
-    digitalWrite(2, LOW);
-  } else{
-    digitalWrite(2, HIGH);
-  }
-    */
-  float aux = (ui * DAC_RESOLUTION) / 5.0;  // Ajusta el voltaje a la resolución del DAC
-  int dacValue = aux;
-  dac.setVoltage(dacValue, false);  // Enviar valor al DAC
 }
 
 void reset_variables() {
@@ -277,6 +308,32 @@ void setPotentiometer(byte channel, byte value) {
   Wire.write((channel == 0) ? 0x00 : 0x10); // Selecciona el canal (0 o 1)
   Wire.write(value); // Configura el valor del potenciómetro
   Wire.endTransmission();
+}
+
+void encoder_1(){
+  currentStateCLK = digitalRead(encoderCLK); // Leer el estado del CLK
+  if (currentStateCLK != lastStateCLK && currentStateCLK == LOW) { // Si el estado ha cambiado
+    if (digitalRead(encoderDT) != currentStateCLK) {     // Si DT es diferente a CLK significa que el encoder está girando en sentido horario
+      v_ref=v_ref+0.5;
+    } else {
+     v_ref=v_ref-0.1;
+    }
+    Serial.print("Valor: ");
+    Serial.println(v_ref);
+  }
+  lastStateCLK = currentStateCLK;
+  
+  if (digitalRead(encoderSW) == LOW) {   // Leer el estado del botón
+    if (!buttonPressed) {
+      buttonPressed = true;
+      Serial.println("Boton Pulsado");
+    }
+  } else {
+    if (buttonPressed) {
+      buttonPressed = false;
+      Serial.println("Boton Liberado");
+    }
+  }
 }
 
 void actualizarDisplay(int16_t adc0, float voltage0, int16_t adc1, float voltage1, int dacValue, float volt_ref) {
